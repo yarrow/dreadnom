@@ -20,7 +20,7 @@
 )]
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use camino::{ReadDirUtf8, Utf8DirEntry, Utf8PathBuf};
 use clap::Parser;
@@ -32,7 +32,12 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
-    println!("{} -> {}", args.original, args.obsidian);
+    let Args { original, obsidian } = Args::parse();
+    for f in original
+        .read_dir_utf8()
+        .with_context(|| format!("Can't open directory {original}"))?
+    {
+        println!("{}", f?.path());
+    }
     Ok(())
 }
