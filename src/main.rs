@@ -20,6 +20,19 @@
 )]
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
 
-fn main() {
-    println!("Hello, world!");
+use anyhow::Result;
+
+use camino::{ReadDirUtf8, Utf8DirEntry, Utf8PathBuf};
+use clap::Parser;
+
+#[derive(Parser)]
+struct Args {
+    original: Utf8PathBuf,
+    obsidian: Utf8PathBuf,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    println!("{} -> {}", args.original, args.obsidian);
+    Ok(())
 }
