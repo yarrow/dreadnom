@@ -24,7 +24,7 @@ use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 
 use assert_cmd::prelude::*;
 use assert_fs::{fixture::ChildPath, prelude::*, TempDir};
@@ -39,8 +39,9 @@ struct Playground {
 fn create_with_files(dir: &ChildPath, names: &Vec<&str>) {
     dir.create_dir_all().unwrap();
     for name in names {
+        let header = Utf8Path::new(name).file_name().unwrap();
         let mut f = File::create(dir.join(name)).unwrap();
-        f.write_all(b"").unwrap();
+        write!(f, "# {header}\n©").unwrap();
     }
 }
 

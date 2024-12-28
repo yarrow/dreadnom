@@ -27,6 +27,8 @@ use anyhow::{bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 
+use dreadnom::obsidianize;
+
 #[derive(Parser)]
 struct Args {
     source: Utf8PathBuf,
@@ -34,10 +36,12 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    const TXT: &str = ".txt";
+
     let Args { source, obsidian } = Args::parse();
 
     // Get the names of the source files
-    let article_names = gather_and_validate_visible_files_in(&source, ".txt")?;
+    let article_names = gather_and_validate_visible_files_in(&source, TXT)?;
     if article_names.is_empty() {
         bail!("No articles found in directory {source}");
     }
@@ -50,13 +54,35 @@ fn main() -> Result<()> {
     gather_and_validate_visible_files_in(&obsidian, ".md")?;
 
     // Create a .md file in `obsidian` for each `.txt` file in `source`
-    for article in article_names {
-        let source_path = source.join(&article);
-        let output_path = obsidian.join(&article).with_extension("md");
-
+    for txt_name in article_names {
+        if txt_name.ends_with(" copy.txt") {
+            // This avoids a duplicate file in Thinonomicon
+            continue;
+        }
+        let source_path = source.join(&txt_name);
         let original = fs::read_to_string(&source_path)?;
+
+        let (content_name, body) = obsidianize(&original)
+            .with_context(|| format!("Can't understand file {source_path}"))?;
+
+        let fs_name = txt_name.trim_end_matches(TXT).to_string();
+        if content_name != fs_name {
+            eprintln!("inner: {content_name} — fs: {fs_name}");
+        }
+        let output_name = if fs_name.starts_with("12") {
+            // `content_name` is correct for the two `12*` files in the Thinonomicon
+            // and (as it happens) for the one `12*` files in the Laironomicon
+            content_name
+        } else if content_name.len() > fs_name.len() {
+            content_name
+        } else {
+            fs_name
+        };
+
+        let output_path = obsidian.join(&output_name).with_extension("md");
+
         let mut output = File::create(&output_path)?;
-        output.write_all(obsidianize(&original).as_bytes())?
+        output.write_all(body.as_bytes())?
     }
 
     Ok(())
@@ -77,13 +103,9 @@ fn gather_and_validate_visible_files_in(dir: &Utf8Path, extension: &str) -> Resu
                     bail!("Files in {dir} should end in {extension} but found {name}");
                 }
 
-                names.push(name);
+                names.push(name.to_string());
             }
         }
     }
     Ok(names)
-}
-
-fn obsidianize(original: &str) -> String {
-    original.to_string()
 }
