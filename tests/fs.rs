@@ -39,7 +39,7 @@ struct Playground {
 fn create_with_files(dir: &ChildPath, names: &Vec<&str>) {
     dir.create_dir_all().unwrap();
     for name in names {
-        let header = Utf8Path::new(name).file_name().unwrap();
+        let header = Utf8Path::new(name).with_extension("").file_name().unwrap().to_string();
         let mut f = File::create(dir.join(name)).unwrap();
         write!(f, "# {header}\n©").unwrap();
     }
@@ -90,42 +90,50 @@ fn source_must_not_be_empty() {
 }
 
 #[test]
-fn source_must_contain_only_txt_files() {
-    let p = Playground::new().source_files(&vec!["foo.txt", "bar.md"]);
-    p.assert_failure().close();
+fn source_must_contain_only_txt_files_starting_with_numbers() {
+    let p = Playground::new().source_files(&vec!["12_foo.txt", "99 bar.txt"]);
+    p.assert_success().close();
+
+    let q = Playground::new().source_files(&vec!["12_foo.txt", "99 bar.md"]);
+    q.assert_failure().close();
+
+    let r = Playground::new().source_files(&vec!["12_foo.txt", "bar.txt"]);
+    r.assert_failure().close();
 }
 
 #[test]
 fn obsidian_need_not_exist() {
-    let p = Playground::new().source_files(&vec!["foo.txt"]);
+    let p = Playground::new().source_files(&vec!["99 foo.txt"]);
     p.assert_success().close();
 }
 
 #[test]
 fn obsidian_may_exist_and_be_empty() {
-    let p = Playground::new().source_files(&vec!["foo.txt"]).obsidian_files(&vec![]);
+    let p = Playground::new().source_files(&vec!["99 foo.txt"]).obsidian_files(&vec![]);
     p.assert_success().close();
 }
 
 #[test]
-fn obsidian_may_contain_dot_md_files() {
-    let p = Playground::new().source_files(&vec!["a.txt"]).obsidian_files(&vec!["b.md", "c.md"]);
+fn obsidian_may_contain_md_files() {
+    let p = Playground::new().source_files(&vec!["99 a.txt"]).obsidian_files(&vec!["b.md", "c.md"]);
     p.assert_success().close();
 }
 
 #[test]
 fn obsidian_may_not_contain_non_md_files() {
-    let p = Playground::new()
-        .source_files(&vec!["foo.txt"])
-        .obsidian_files(&vec!["foo.md", "bar.md", "baz.txt"]);
+    let p = Playground::new().source_files(&vec!["00 foo.txt"]).obsidian_files(&vec![
+        "foo.md",
+        "bar.md",
+        "99 baz.txt",
+    ]);
     p.assert_failure().close();
 }
 
 #[test]
 fn dreadnom_creates_an_obsidian_file_for_each_source_file() {
     let mut p = Playground::new()
-        .source_files(&vec!["foo.txt", "bar.txt", "baz.txt"])
-        .obsidian_files(&vec!["foo.md"]);
+        .source_files(&vec!["01 foo.txt", "02 bar.txt", "03 baz.txt"])
+        .obsidian_files(&vec!["01 foo.md"]);
     p = p.assert_success();
     let obsidian = Utf8PathBuf::from_path_buf(p.obsidian.to_path_buf()).unwrap();
     let mut result = Vec::new();
@@ -133,6 +141,6 @@ fn dreadnom_creates_an_obsidian_file_for_each_source_file() {
         result.push(entry.unwrap().path().file_name().unwrap().to_string());
     }
     result.sort();
-    assert_eq!(result, vec!["bar.md", "baz.md", "foo.md"]);
+    assert_eq!(result, vec!["01 foo.md", "02 bar.md", "03 baz.md"]);
     p.close();
 }

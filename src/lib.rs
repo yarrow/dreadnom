@@ -29,40 +29,14 @@ use std::{str, sync::LazyLock};
 
 type LineStorage = Vec<Vec<u8>>;
 
-pub fn obsidianize(contents: &str) -> Result<(String, String)> {
-    if let Some((file_name, body)) = urban_idea_special_case(contents) {
-        return Ok((file_name, body));
-    }
-
-    let (file_name, prologue, trimmed_contents) = extract_prologue(contents)?;
-    let mut result = prologue;
-
-    let body = parse(&file_name, trimmed_contents.as_bytes())?;
-    result.push_str(&body.to_string());
-
-    Ok((file_name, result))
-}
-
-fn urban_idea_special_case(contents: &str) -> Option<(String, String)> {
-    static URBAN: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^#\s+71:? Urban.*\n#ideas\s*(1.)").unwrap());
-    const URBAN_FIX: &[u8] = b"\n## Ideas\n";
-
-    if let Some(urb) = URBAN.captures(contents.as_bytes()) {
-        let start = urb.get(1).unwrap().start();
-        return Some(("71 Urban Events".to_string(), ["## Ideas\n", &contents[start..]].concat()));
-    }
-    None
-}
-
-fn extract_prologue(contents: &str) -> Result<(String, String, &str)> {
+pub fn subdivide(contents: &str) -> Result<(String, String, &str)> {
     const COPYRIGHT: &str = "©";
-    static HORIZONTAL_RULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^---\s*").unwrap());
+    static SUBHEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#+\s").unwrap());
     static OGL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:Include )?OGL\s").unwrap());
 
-    let mut contents = contents.as_bytes();
+    let contents = contents.as_bytes();
     let mut lines = contents.as_bstr().lines_with_terminator();
-    let header = lines.next().unwrap();
+    let header = lines.next().unwrap_or(b"");
     let mut len_taken = header.len();
 
     if header.starts_with(b"## 00 Read Me") {
@@ -77,31 +51,22 @@ fn extract_prologue(contents: &str) -> Result<(String, String, &str)> {
 
     let mut prologue = Vec::new();
     for line in lines.by_ref() {
+        if SUBHEAD.is_match(line) {
+            // `remainder` will start with '\n' followed by the subheader line
+            // We know that '\n' preceeds the subhead because `header` must have ended with '\n'
+            // for there to be further content in `lines`
+            len_taken -= 1;
+            break;
+        }
         len_taken += line.len();
         if line.as_bstr().contains_str(COPYRIGHT) || OGL.is_match(line) {
             prologue.push(line.to_owned());
-            break;
         }
     }
     if prologue.is_empty() {
         bail!("It doesn't contain a copyright symbol ({COPYRIGHT})");
     }
 
-    for line in lines {
-        len_taken += line.len();
-        if line.as_bstr().contains_str(COPYRIGHT) {
-            prologue.push(line.to_owned());
-        } else if HORIZONTAL_RULE.is_match(line) {
-            let mut line = line;
-            if line[line.len() - 1] == b'\n' {
-                line = &line[..line.len() - 1];
-                len_taken -= 1;
-            }
-            prologue.push(b"\n".to_vec());
-            prologue.push(line.to_owned());
-            break;
-        }
-    }
     let remainder = if len_taken < contents.len() { &contents[len_taken..] } else { "".as_bytes() };
     Ok((
         obsidian_file_name,
@@ -116,11 +81,11 @@ fn file_name_from_header(header: &[u8]) -> Result<String> {
         LazyLock::new(|| Regex::new(r"^(?:20 Things #|Monstrous Lair #)(.*)").unwrap());
     static COLON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r":").unwrap());
 
-    let Some(header_caps) = HEADER.captures(&header) else {
+    let Some(header_caps) = HEADER.captures(header) else {
         bail!("It doesn't start with a Markdown header");
     };
     let initial_file_name = header_caps[1].trim();
-    let file_name = match THINGS_20.captures(&initial_file_name) {
+    let file_name = match THINGS_20.captures(initial_file_name) {
         Some(caps) => caps[1].trim().to_vec(),
         None => initial_file_name.trim().to_vec(),
     };
@@ -152,7 +117,7 @@ enum LineKind {
     Vanilla,
 }
 
-fn parse(name: &str, contents: &[u8]) -> Result<BString> {
+pub fn parse(name: &str, contents: &[u8]) -> Result<BString> {
     use LineKind::*;
 
     if contents.is_empty() {
@@ -178,7 +143,7 @@ fn parse(name: &str, contents: &[u8]) -> Result<BString> {
                 Header | Vanilla => {}
                 ListItem => {
                     output[slot] = dice_code(name, &link);
-                    output.push(b"\n".to_vec());
+                    output.push(b"\n\n".to_vec());
                     output.push(link.clone());
                 }
             }
@@ -196,7 +161,7 @@ fn parse(name: &str, contents: &[u8]) -> Result<BString> {
     output.push(contents[start..end].to_owned());
     if previous == ListItem {
         output[slot] = dice_code(name, &link);
-        output.push(b"\n".to_vec());
+        output.push(b"\n\n".to_vec());
         output.push(link.clone());
     }
 
@@ -232,7 +197,7 @@ fn make_link(header: &[u8]) -> Vec<u8> {
 }
 
 fn dice_code(name: &str, link: &[u8]) -> Vec<u8> {
-    [B("\n`dice: [["), name.as_bytes(), B("#"), link, B("]]`")].concat()
+    [B("\n`dice: [["), name.as_bytes(), B("#"), link, B("]]`\n")].concat()
 }
 
 #[cfg(test)]
@@ -243,21 +208,7 @@ mod tests {
 
     #[test]
     fn a_minimal_content_suffices() {
-        assert!(extract_prologue(MINIMAL).is_ok());
-    }
-
-    #[test]
-    fn special_case_for_urban_ideas() {
-        let prologue1 = "# 71 Urban\n#ideas\n";
-        let prologue2 = "# 71: Urban Cities\n#ideas\n\n\n";
-        let body = "1. blah blah\n 2.blah diddy blah\n";
-        for prologue in [prologue1, prologue2] {
-            let contents = [prologue, body].concat();
-            assert_eq!(
-                obsidianize(&contents).unwrap(),
-                ("71 Urban Events".to_string(), ["## Ideas\n", body].concat())
-            );
-        }
+        assert!(subdivide(MINIMAL).is_ok());
     }
 
     #[test]
@@ -265,48 +216,28 @@ mod tests {
         let read_me = "00 Read Me";
         let rest = "blah blah\nblah diddy blah\n";
         let contents = ["## ", read_me, "\n", rest].concat();
-        assert_eq!(
-            extract_prologue(&contents).unwrap(),
-            (read_me.to_string(), rest.to_string(), "")
-        );
+        assert_eq!(subdivide(&contents).unwrap(), (read_me.to_string(), rest.to_string(), ""));
     }
 
     #[test]
     fn content_must_contain_copyright_symbol() {
-        assert!(extract_prologue("# H\ncopyright").is_err());
+        assert!(subdivide("# H\ncopyright").is_err());
     }
 
     #[test]
     #[allow(non_snake_case)]
     fn but_OGL_instead_of_copyright_is_ok() {
-        assert!(extract_prologue("# H\nOGL\nis not copyright\n----\n").is_ok());
+        assert!(subdivide("# H\nOGL\nis not copyright\n----\n").is_ok());
     }
 
     #[test]
-    fn extract_prologue_does() {
-        // returns file name, prologure, and body
-        let input = "# Owlbear \nThanks\n©\nfoo\n©\nbar\n----\n";
+    fn subdivide_does() {
+        // returns file name, prologue, and body
+        let input = "# Owlbear \nThanks\n©\nfoo\n©\nbar\n## Barred Owl";
         let fname = "Owlbear".to_owned();
-        let prolog = "©\n©\n\n----".to_owned();
-        let body = "\n";
-        assert_eq!(extract_prologue(input).unwrap(), (fname, prolog, body));
-    }
-
-    const NAME: &str = "A File Name";
-    #[test]
-    fn parse_requires_nonempty_content_to_begin_with_a_newline() {
-        let bad_content = b"How\nnow, brown cow?\n";
-        assert!(parse(NAME, bad_content).is_err());
-    }
-
-    fn p(contents: &[u8]) -> BString {
-        parse(NAME, contents).unwrap()
-    }
-
-    #[test]
-    fn if_entire_content_is_vanilla_then_parse_returns_it_unchanged() {
-        let expected = b"\nHow\nnow, brown cow?\n";
-        assert_eq!(p(expected), expected.as_bstr());
+        let prolog = "©\n©\n".to_owned();
+        let body = "\n## Barred Owl";
+        assert_eq!(subdivide(input).unwrap(), (fname, prolog, body));
     }
 
     #[test]
@@ -324,17 +255,35 @@ mod tests {
 
     #[test]
     fn dice_code_inserts_name_and_link_into_a_code_template() {
-        let expected = "\n`dice: [[A#B]]`".as_bytes().as_bstr();
+        let expected = "\n`dice: [[A#B]]`\n".as_bytes().as_bstr();
         assert_eq!(dice_code("A", B("B")).as_bstr(), expected);
     }
 
+    const NAME: &str = "A File Name";
+    #[test]
+    fn parse_requires_nonempty_content_to_begin_with_a_newline() {
+        let bad_content = b"How\nnow, brown cow?\n";
+        assert!(parse(NAME, bad_content).is_err());
+    }
+
+    fn parz(contents: &[u8]) -> BString {
+        parse(NAME, contents).unwrap()
+    }
+
+    #[test]
+    fn if_entire_content_is_vanilla_then_parse_returns_it_unchanged() {
+        let expected = b"\nHow\nnow, brown cow?\n";
+        assert_eq!(parz(expected), expected.as_bstr());
+    }
     #[test]
     fn parse_adds_dice_rolling_code_to_random_lists() {
         let input = b"\n## Random List\n1. Foo\n2. Baz";
         let expected = format!(
-            "\n## Random List\n`dice: [[{NAME}#^random-list]]`\n1. Foo\n2. Baz\n^random-list"
+            "\n## Random List\n`dice: [[{NAME}#^random-list]]`\n\n1. Foo\n2. Baz\n\n^random-list"
         );
-        assert_eq!(p(input), expected.as_bytes().as_bstr());
+        let input = [B(input), B("\nCat Dog")].concat();
+        let expected = [&expected, "\nCat Dog"].concat();
+        assert_eq!(parz(&input), expected.as_bytes().as_bstr());
     }
 }
 #[cfg(test)]
