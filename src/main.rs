@@ -39,6 +39,8 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    const PRE_PROLOGUE: &[u8] = b"---\nobsidianUIMode: preview\n---\n\n";
+
     const TXT: &str = ".txt";
 
     let Args { source, obsidian } = Args::parse();
@@ -106,6 +108,7 @@ fn main() -> Result<()> {
 
         let output_path = obsidian.join(&output_name).with_extension("md");
         let mut output = File::create(&output_path)?;
+        output.write_all(PRE_PROLOGUE)?;
         output.write_all(body.as_bytes())?
     }
 
