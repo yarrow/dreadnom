@@ -21,7 +21,7 @@
 )]
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_mut, unused_variables))]
 
-use anyhow::{self, bail, Result};
+use anyhow::{self, bail, Context, Result};
 use bstr::{BString, ByteSlice, B};
 use logos::Logos;
 use regex::bytes::Regex;
@@ -111,14 +111,18 @@ impl fmt::Display for ThisCantHappen {
 enum LineKind {
     #[regex(b"\n\\d+\\.[^\n]*")]
     ListItem,
+
     #[regex(b"\n#+ [^\n]*")]
     Header,
+
     #[regex(b"\n[^\n]*")]
     Vanilla,
 }
 
 pub fn parse(name: &str, contents: &[u8]) -> Result<BString> {
     use LineKind::*;
+
+    const PARAGRAPH: &[u8] = b"\n\n";
 
     if contents.is_empty() {
         return Ok(BString::new(vec![]));
@@ -130,10 +134,14 @@ pub fn parse(name: &str, contents: &[u8]) -> Result<BString> {
     let mut output = LineStorage::new();
     let (mut start, mut end) = (0, 0);
     let mut previous = Vanilla;
-    let (mut link, mut slot) = (Vec::<u8>::new(), 0);
+    let (mut link, mut slot) = (b"^START".to_vec(), 0);
+    let mut in_paragraph: bool;
 
     for (kind, span) in LineKind::lexer(contents).spanned() {
-        let kind = kind?;
+        let kind = kind.with_context(|| {
+            let show: Vec<String> = output.iter().map(|part| part.as_bstr().to_string()).collect();
+            format!("Seen so far: {show:?}")
+        })?;
         if kind == previous {
             end = span.end;
         } else {
@@ -142,17 +150,18 @@ pub fn parse(name: &str, contents: &[u8]) -> Result<BString> {
             match previous {
                 Header | Vanilla => {}
                 ListItem => {
-                    output[slot] = dice_code(name, &link);
-                    output.push(b"\n\n".to_vec());
+                    output.push(PARAGRAPH.to_vec());
                     output.push(link.clone());
+                    output.push(PARAGRAPH.to_vec());
                 }
             }
             match kind {
                 Vanilla => {}
                 Header => link = make_link(&contents[span]),
                 ListItem => {
-                    slot = output.len();
-                    output.push(Vec::new());
+                    output.push(PARAGRAPH.to_vec());
+                    output.push(dice_code(name, &link));
+                    output.push(PARAGRAPH.to_vec());
                 }
             }
         }
@@ -266,8 +275,10 @@ mod tests {
         assert!(parse(NAME, bad_content).is_err());
     }
 
-    fn parz(contents: &[u8]) -> BString {
-        parse(NAME, contents).unwrap()
+    fn parz(contents: &[u8]) -> String {
+        static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\n+").unwrap());
+        let parsed = parse(NAME, contents).unwrap();
+        PARAGRAPH.replace_all(&parsed, "¶".as_bytes()).as_bstr().to_string()
     }
 
     #[test]
@@ -275,15 +286,46 @@ mod tests {
         let expected = b"\nHow\nnow, brown cow?\n";
         assert_eq!(parz(expected), expected.as_bstr());
     }
+
     #[test]
-    fn parse_adds_dice_rolling_code_to_random_lists() {
+    fn heading_followed_by_vanilla_does_not_introduce_a_paragraph() {
+        let expected = "\n## Head\nVanilla";
+        assert_eq!(parz(expected.as_bytes()), expected);
+    }
+
+    #[test]
+    fn parse_adds_dice_rolling_code_before_and_link_after_lists() {
         let input = b"\n## Random List\n1. Foo\n2. Baz";
-        let expected = format!(
-            "\n## Random List\n`dice: [[{NAME}#^random-list]]`\n\n1. Foo\n2. Baz\n\n^random-list"
-        );
+        let expected =
+            format!("\n## Random List¶`dice: [[{NAME}#^random-list]]`¶1. Foo\n2. Baz¶^random-list");
         let input = [B(input), B("\nCat Dog")].concat();
-        let expected = [&expected, "\nCat Dog"].concat();
+        let expected = [&expected, "¶Cat Dog"].concat();
         assert_eq!(parz(&input), expected.as_bytes().as_bstr());
+    }
+
+    #[test]
+    fn added_material_is_preceeded_and_followed_by_paragraphs() {
+        let before = ["\n## X", "\n## X\ntext"];
+        let after = ["## Y", "text", ""];
+        let list = "1. a\n2. b";
+        let link = "^x";
+        let code = format!("`dice: [[{NAME}#{link}]]`");
+        for b4 in before {
+            for aft in after {
+                let input = [b4, "\n", list, "\n", aft].concat();
+                let expected = [b4, "¶", &code, "¶", list, "¶", link, "¶", aft].concat();
+                assert_eq!(parz(&input.as_bytes()), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn check_bad_parse_regression() {
+        const WEIRD: &str = "\n\n1. T\n";
+        let link = "^START";
+        let code = format!("`dice: [[{NAME}#{link}]]`");
+        let expected = ["¶", &code, "¶", "1. T", "¶", link, "¶"].concat();
+        assert_eq!(parz(WEIRD.as_bytes()), expected);
     }
 }
 #[cfg(test)]
