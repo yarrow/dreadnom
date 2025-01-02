@@ -12,6 +12,8 @@
 )]
 #![allow(clippy::cargo)] // FIXME
 #![allow(
+    clippy::bool_to_int_with_if,
+    clippy::comparison_to_empty,
     clippy::enum_glob_use,
     clippy::items_after_statements,
     clippy::missing_errors_doc,
@@ -22,60 +24,53 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_mut, unused_variables))]
 
 use anyhow::{self, bail, Context, Result};
-use bstr::{BString, ByteSlice, B};
 use logos::Logos;
-use regex::bytes::Regex;
-use std::{str, sync::LazyLock};
-
-type LineStorage = Vec<Vec<u8>>;
+use regex::Regex;
+use std::{error, fmt, ops::Range, str, sync::LazyLock};
 
 pub fn subdivide(contents: &str) -> Result<(String, String, &str)> {
+    static SUBHEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n#+\s").unwrap());
     const COPYRIGHT: &str = "©";
-    static SUBHEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#+\s").unwrap());
-    static OGL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:Include )?OGL\s").unwrap());
+    static OGL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:Include )?OGL\b").unwrap());
 
-    let contents = contents.as_bytes();
-    let mut lines = contents.as_bstr().lines_with_terminator();
-    let header = lines.next().unwrap_or(b"");
-    let mut len_taken = header.len();
+    let Some(newline) = contents.find('\n') else {
+        return Ok((file_name_from_header(contents)?, String::new(), ""));
+    };
 
-    if header.starts_with(b"## 00 Read Me") {
-        return Ok((
-            "00 Read Me".to_string(),
-            contents[len_taken..].to_str_lossy().to_string(),
-            "",
-        ));
+    let header = contents[0..newline].to_string();
+    let obsidian_file_name = file_name_from_header(&header)?;
+    let mut proem = &contents[newline..];
+    let remainder;
+
+    if let Some(sub) = SUBHEAD.find(proem) {
+        remainder = &proem[sub.start()..];
+        let pro_start = if sub.start() == 0 { 0 } else { 1 }; // Skip the leading '\n'
+        proem = &proem[pro_start..sub.start()];
+    } else {
+        proem = &proem[1..];
+        remainder = "";
     }
-
-    let obsidian_file_name = file_name_from_header(header)?;
 
     let mut prologue = Vec::new();
-    for line in lines.by_ref() {
-        if SUBHEAD.is_match(line) {
-            // `remainder` will start with '\n' followed by the subheader line
-            // We know that '\n' preceeds the subhead because `header` must have ended with '\n'
-            // for there to be further content in `lines`
-            len_taken -= 1;
-            break;
+    if remainder == "" {
+        prologue.push(proem.to_owned());
+    } else {
+        let mut lines = proem.lines();
+        for line in lines.by_ref() {
+            if line.contains(COPYRIGHT) || OGL.is_match(line) {
+                prologue.push(line.to_owned());
+                prologue.push("\n".to_owned());
+            }
         }
-        len_taken += line.len();
-        if line.as_bstr().contains_str(COPYRIGHT) || OGL.is_match(line) {
-            prologue.push(line.to_owned());
+        if prologue.is_empty() {
+            bail!("It doesn't contain a copyright symbol ({COPYRIGHT})");
         }
-    }
-    if prologue.is_empty() {
-        bail!("It doesn't contain a copyright symbol ({COPYRIGHT})");
     }
 
-    let remainder = if len_taken < contents.len() { &contents[len_taken..] } else { "".as_bytes() };
-    Ok((
-        obsidian_file_name,
-        prologue.concat().to_str_lossy().to_string(),
-        str::from_utf8(remainder)?,
-    ))
+    Ok((obsidian_file_name, prologue.concat(), remainder))
 }
 
-fn file_name_from_header(header: &[u8]) -> Result<String> {
+fn file_name_from_header(header: &str) -> Result<String> {
     static HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#+\s+(.*\S)\s*").unwrap());
     static THINGS_20: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(?:20 Things #|Monstrous Lair #)(.*)").unwrap());
@@ -86,11 +81,11 @@ fn file_name_from_header(header: &[u8]) -> Result<String> {
     };
     let initial_file_name = header_caps[1].trim();
     let file_name = match THINGS_20.captures(initial_file_name) {
-        Some(caps) => caps[1].trim().to_vec(),
-        None => initial_file_name.trim().to_vec(),
+        Some(caps) => caps[1].trim().to_string(),
+        None => initial_file_name.trim().to_string(),
     };
 
-    Ok(COLON.replace(&file_name, b"").to_str_lossy().to_string())
+    Ok(COLON.replace(&file_name, "").to_string())
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -99,8 +94,7 @@ enum ThisCantHappen {
     UnexpectedParsingError,
 }
 
-impl std::error::Error for ThisCantHappen {}
-use std::fmt;
+impl error::Error for ThisCantHappen {}
 impl fmt::Display for ThisCantHappen {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Internal error: Unexpected Parsing Error")
@@ -109,59 +103,55 @@ impl fmt::Display for ThisCantHappen {
 #[derive(Debug, Logos, PartialEq)]
 #[logos(error = ThisCantHappen)]
 enum LineKind {
-    #[regex(b"\n\\d+\\.[^\n]*")]
+    #[regex("\n\\d+\\.[^\n]*")]
     ListItem,
 
-    #[regex(b"\n#+ [^\n]*")]
+    #[regex("\n#+ [^\n]*")]
     Header,
 
-    #[regex(b"\n[^\n]*")]
+    #[regex("\n[^\n]*")]
     Vanilla,
 }
 
-pub fn parse(name: &str, contents: &[u8]) -> Result<BString> {
+pub fn parse(name: &str, contents: &str) -> Result<String> {
     use LineKind::*;
 
-    const PARAGRAPH: &[u8] = b"\n\n";
+    let paragraph = "\n\n";
 
     if contents.is_empty() {
-        return Ok(BString::new(vec![]));
+        return Ok(String::new());
     }
-    if contents[0] != b'\n' {
+    if !contents.starts_with('\n') {
         bail!(r"Internal error: `parse(contents)` requires `contents` to start with a newline");
     }
 
-    let mut output = LineStorage::new();
+    let mut output = Vec::new();
     let (mut start, mut end) = (0, 0);
     let mut previous = Vanilla;
-    let (mut link, mut slot) = (b"^START".to_vec(), 0);
-    let mut in_paragraph: bool;
+    let mut link = "^START".to_string();
 
     for (kind, span) in LineKind::lexer(contents).spanned() {
-        let kind = kind.with_context(|| {
-            let show: Vec<String> = output.iter().map(|part| part.as_bstr().to_string()).collect();
-            format!("Seen so far: {show:?}")
-        })?;
+        let kind = kind.with_context(|| format!("Seen so far: {output:?}"))?;
         if kind == previous {
             end = span.end;
         } else {
             output.push(contents[start..end].to_owned());
-            std::ops::Range { start, end } = span;
+            Range { start, end } = span;
             match previous {
                 Header | Vanilla => {}
                 ListItem => {
-                    output.push(PARAGRAPH.to_vec());
+                    output.push(paragraph.to_string());
                     output.push(link.clone());
-                    output.push(PARAGRAPH.to_vec());
+                    output.push(paragraph.to_string());
                 }
             }
             match kind {
                 Vanilla => {}
                 Header => link = make_link(&contents[span]),
                 ListItem => {
-                    output.push(PARAGRAPH.to_vec());
+                    output.push(paragraph.to_string());
                     output.push(dice_code(name, &link));
-                    output.push(PARAGRAPH.to_vec());
+                    output.push(paragraph.to_string());
                 }
             }
         }
@@ -169,12 +159,12 @@ pub fn parse(name: &str, contents: &[u8]) -> Result<BString> {
     }
     output.push(contents[start..end].to_owned());
     if previous == ListItem {
-        output[slot] = dice_code(name, &link);
-        output.push(b"\n\n".to_vec());
-        output.push(link.clone());
+        output.push(paragraph.to_string());
+        output.push(dice_code(name, &link));
+        output.push(paragraph.to_string());
     }
 
-    Ok(BString::from(output.concat()))
+    Ok(output.concat())
 }
 
 #[derive(Debug, Logos, PartialEq)]
@@ -186,12 +176,11 @@ enum LinkToken {
     NonWord,
 }
 
-fn make_link(header: &[u8]) -> Vec<u8> {
-    let header = String::from_utf8_lossy(header);
+fn make_link(header: &str) -> String {
     const SEPARATOR: &str = "-";
     use LinkToken::*;
     let mut parts = vec!["^"];
-    for (token, span) in LinkToken::lexer(&header).spanned() {
+    for (token, span) in LinkToken::lexer(header).spanned() {
         parts.push(if token.unwrap() == Word { &header[span] } else { "-" });
     }
     if parts.len() >= 2 && parts[1] == SEPARATOR {
@@ -202,11 +191,11 @@ fn make_link(header: &[u8]) -> Vec<u8> {
             parts.pop();
         }
     }
-    parts.concat().to_lowercase().into_bytes()
+    parts.concat().to_lowercase()
 }
 
-fn dice_code(name: &str, link: &[u8]) -> Vec<u8> {
-    [B("\n`dice: [["), name.as_bytes(), B("#"), link, B("]]`\n")].concat()
+fn dice_code(name: &str, link: &str) -> String {
+    ["\n`dice: [[", name, "#", link, "]]`\n"].concat()
 }
 
 #[cfg(test)]
@@ -221,22 +210,22 @@ mod tests {
     }
 
     #[test]
-    fn special_case_for_00_read_me() {
+    fn prologue_must_contain_copyright_symbol() {
+        assert!(subdivide("# H\ncopyright\n## IJK").is_err());
+    }
+
+    #[test]
+    fn but_if_there_are_no_subsections_then_copyright_isnt_required() {
         let read_me = "00 Read Me";
-        let rest = "blah blah\nblah diddy blah\n";
+        let rest = "\nblah diddy blah\n";
         let contents = ["## ", read_me, "\n", rest].concat();
         assert_eq!(subdivide(&contents).unwrap(), (read_me.to_string(), rest.to_string(), ""));
     }
 
     #[test]
-    fn content_must_contain_copyright_symbol() {
-        assert!(subdivide("# H\ncopyright").is_err());
-    }
-
-    #[test]
     #[allow(non_snake_case)]
     fn but_OGL_instead_of_copyright_is_ok() {
-        assert!(subdivide("# H\nOGL\nis not copyright\n----\n").is_ok());
+        assert!(subdivide("# H\nOGL\nis not copyright\n----\n## Subhead").is_ok());
     }
 
     #[test]
@@ -251,56 +240,53 @@ mod tests {
 
     #[test]
     fn make_link_result_starts_with_newline_and_hat() {
-        assert_eq!(make_link(b"").as_bstr(), b"^".as_bstr());
+        assert_eq!(make_link(""), "^");
     }
 
     #[test]
     fn make_link_trims_cruft_and_lowercases() {
-        assert_eq!(
-            make_link(b"\n@$#$@how%^&^&%NOW-you--------COW-------").as_bstr(),
-            b"^how-now-you-cow".as_bstr()
-        );
+        assert_eq!(make_link("\n@$#$@how%^&^&%NOW-you--------COW-------"), "^how-now-you-cow");
     }
 
     #[test]
     fn dice_code_inserts_name_and_link_into_a_code_template() {
-        let expected = "\n`dice: [[A#B]]`\n".as_bytes().as_bstr();
-        assert_eq!(dice_code("A", B("B")).as_bstr(), expected);
+        let expected = "\n`dice: [[A#B]]`\n";
+        assert_eq!(dice_code("A", "B"), expected);
     }
 
     const NAME: &str = "A File Name";
     #[test]
     fn parse_requires_nonempty_content_to_begin_with_a_newline() {
-        let bad_content = b"How\nnow, brown cow?\n";
+        let bad_content = "How\nnow, brown cow?\n";
         assert!(parse(NAME, bad_content).is_err());
     }
 
-    fn parz(contents: &[u8]) -> String {
+    fn parz(contents: &str) -> String {
         static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\n+").unwrap());
-        let parsed = parse(NAME, contents).unwrap();
-        PARAGRAPH.replace_all(&parsed, "¶".as_bytes()).as_bstr().to_string()
+        let parsed = parse(NAME, contents).unwrap().to_string();
+        PARAGRAPH.replace_all(&parsed, "¶").to_string()
     }
 
     #[test]
     fn if_entire_content_is_vanilla_then_parse_returns_it_unchanged() {
-        let expected = b"\nHow\nnow, brown cow?\n";
-        assert_eq!(parz(expected), expected.as_bstr());
+        let expected = "\nHow\nnow, brown cow?\n";
+        assert_eq!(parz(expected), expected);
     }
 
     #[test]
     fn heading_followed_by_vanilla_does_not_introduce_a_paragraph() {
         let expected = "\n## Head\nVanilla";
-        assert_eq!(parz(expected.as_bytes()), expected);
+        assert_eq!(parz(expected), expected);
     }
 
     #[test]
     fn parse_adds_dice_rolling_code_before_and_link_after_lists() {
-        let input = b"\n## Random List\n1. Foo\n2. Baz";
+        let input = "\n## Random List\n1. Foo\n2. Baz";
         let expected =
             format!("\n## Random List¶`dice: [[{NAME}#^random-list]]`¶1. Foo\n2. Baz¶^random-list");
-        let input = [B(input), B("\nCat Dog")].concat();
+        let input = [input, "\nCat Dog"].concat();
         let expected = [&expected, "¶Cat Dog"].concat();
-        assert_eq!(parz(&input), expected.as_bytes().as_bstr());
+        assert_eq!(parz(&input), expected);
     }
 
     #[test]
@@ -314,7 +300,7 @@ mod tests {
             for aft in after {
                 let input = [b4, "\n", list, "\n", aft].concat();
                 let expected = [b4, "¶", &code, "¶", list, "¶", link, "¶", aft].concat();
-                assert_eq!(parz(&input.as_bytes()), expected);
+                assert_eq!(parz(&input), expected);
             }
         }
     }
@@ -325,7 +311,7 @@ mod tests {
         let link = "^START";
         let code = format!("`dice: [[{NAME}#{link}]]`");
         let expected = ["¶", &code, "¶", "1. T", "¶", link, "¶"].concat();
-        assert_eq!(parz(WEIRD.as_bytes()), expected);
+        assert_eq!(parz(WEIRD), expected);
     }
 }
 #[cfg(test)]
@@ -338,31 +324,31 @@ mod test_file_name_from_header {
 
     #[test]
     fn must_be_a_markdown_header() {
-        assert!(file_name_from_header(b" # Too Late").is_err());
+        assert!(file_name_from_header(" # Too Late").is_err());
     }
 
     #[test]
     fn trims_header_marker_and_whitespace() {
-        assert_eq!(file_name_from_header(b"#  99 Bottles\t\n").unwrap(), "99 Bottles");
+        assert_eq!(file_name_from_header("#  99 Bottles\t\n").unwrap(), "99 Bottles");
     }
 
     #[test]
     fn trims_20_things_prefix() {
         // Some of the Raging Swan headers begin for file n begin with '20 Things #n:'.
         // We trim the '20 Things #' and the colon.
-        assert_eq!(file_name_from_header(b"# 20 Things #99: Bottles\n").unwrap(), "99 Bottles");
+        assert_eq!(file_name_from_header("# 20 Things #99: Bottles\n").unwrap(), "99 Bottles");
     }
 
     #[test]
     fn file_name_from_header_removes_colon_everywhere() {
-        assert_eq!(file_name_from_header(b"# 88: Mottles\n").unwrap(), "88 Mottles".to_string());
+        assert_eq!(file_name_from_header("# 88: Mottles\n").unwrap(), "88 Mottles".to_string());
     }
 
     #[test]
     fn markdown_can_be_header_2_etc() {
         for octo in ["#", "##", "####"] {
             let header = format!("{octo} 99 Bottles");
-            assert_eq!(file_name_from_header(header.as_bytes()).unwrap(), "99 Bottles");
+            assert_eq!(file_name_from_header(&header).unwrap(), "99 Bottles");
         }
     }
 }

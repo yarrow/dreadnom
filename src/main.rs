@@ -20,10 +20,7 @@
 )]
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
 
-use std::fs::{self, File};
-use std::io::Write;
-use std::str::{self, FromStr};
-use std::sync::LazyLock;
+use std::{fs, fs::File, io::Write, str, str::FromStr, sync::LazyLock};
 
 use anyhow::{bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -85,11 +82,6 @@ fn main() -> Result<()> {
             panic!("This can't happen: all article_names start with a number");
         };
         let (_, content_name) = parse_name(&content_name);
-        if content_name != fs_name && n != 12 {
-            let (inner, fs) =
-                if content_name.len() > fs_name.len() { ("INNER", "fs") } else { ("inner", "FS") };
-            eprintln!("{inner}: {content_name} — {fs}: {fs_name}");
-        }
         let description = if n == 12 {
             // `content_name` is correct for the two `12*` files in the Thinonomicon
             // and (as it happens) for the one `12*` files in the Laironomicon
@@ -102,7 +94,7 @@ fn main() -> Result<()> {
         let output_name = format!("{n:02} {description}");
 
         let mut body = prologue;
-        let parsed = parse(&output_name, to_be_parsed.as_bytes())
+        let parsed = parse(&output_name, to_be_parsed)
             .with_context(|| format!("Can't understand file {source_path}"))?;
         body.push_str(&parsed.to_string());
 
