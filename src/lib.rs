@@ -113,10 +113,41 @@ enum LineKind {
     Vanilla,
 }
 
+struct ParseParts<'a> {
+    name: &'a str,
+    parts: Vec<String>,
+    link: String,
+}
+
+impl<'a> ParseParts<'a> {
+    fn new(name: &'a str, link: &str) -> Self {
+        Self { name, parts: Vec::new(), link: link.to_string() }
+    }
+    fn push(&mut self, text: &str) {
+        self.parts.push(text.to_string());
+    }
+    fn push_with_paragraph(&mut self, text: String) {
+        const PARAGRAPH: &str = "\n\n";
+        self.push(PARAGRAPH);
+        self.parts.push(text);
+        self.push(PARAGRAPH);
+    }
+    fn set_link(&mut self, link_text: &str) {
+        self.link = make_link(link_text);
+    }
+    fn push_link(&mut self) {
+        self.push_with_paragraph(self.link.clone());
+    }
+    fn push_dice_code(&mut self) {
+        self.push_with_paragraph(dice_code(self.name, &self.link));
+    }
+    fn concat(&self) -> String {
+        self.parts.concat()
+    }
+}
+
 pub fn parse(name: &str, contents: &str) -> Result<String> {
     use LineKind::*;
-
-    let paragraph = "\n\n";
 
     if contents.is_empty() {
         return Ok(String::new());
@@ -125,46 +156,35 @@ pub fn parse(name: &str, contents: &str) -> Result<String> {
         bail!(r"Internal error: `parse(contents)` requires `contents` to start with a newline");
     }
 
-    let mut output = Vec::new();
+    let mut parts = ParseParts::new(name, "^START");
     let (mut start, mut end) = (0, 0);
     let mut previous = Vanilla;
-    let mut link = "^START".to_string();
 
     for (kind, span) in LineKind::lexer(contents).spanned() {
-        let kind = kind.with_context(|| format!("Seen so far: {output:?}"))?;
+        let kind = kind.with_context(|| format!("Seen so far: {:?}", parts.concat()))?;
         if kind == previous {
             end = span.end;
         } else {
-            output.push(contents[start..end].to_owned());
-            Range { start, end } = span;
-            match previous {
-                Header | Vanilla => {}
-                ListItem => {
-                    output.push(paragraph.to_string());
-                    output.push(link.clone());
-                    output.push(paragraph.to_string());
-                }
+            parts.push(&contents[start..end]);
+            if previous == ListItem {
+                parts.push_link();
             }
+            Range { start, end } = span;
             match kind {
+                ListItem => parts.push_dice_code(),
+                Header => parts.set_link(&contents[span]),
                 Vanilla => {}
-                Header => link = make_link(&contents[span]),
-                ListItem => {
-                    output.push(paragraph.to_string());
-                    output.push(dice_code(name, &link));
-                    output.push(paragraph.to_string());
-                }
             }
         }
         previous = kind;
     }
-    output.push(contents[start..end].to_owned());
+    parts.push(&contents[start..end]);
     if previous == ListItem {
-        output.push(paragraph.to_string());
-        output.push(dice_code(name, &link));
-        output.push(paragraph.to_string());
+        parts.push_link();
     }
 
-    Ok(output.concat())
+    static EXTRA_NEWLINES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\n\n+").unwrap());
+    Ok(EXTRA_NEWLINES.replace_all(&parts.concat(), "\n\n").to_string())
 }
 
 #[derive(Debug, Logos, PartialEq)]
@@ -263,7 +283,7 @@ mod tests {
 
     fn parz(contents: &str) -> String {
         static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\n+").unwrap());
-        let parsed = parse(NAME, contents).unwrap().to_string();
+        let parsed = parse(NAME, contents).unwrap();
         PARAGRAPH.replace_all(&parsed, "¶").to_string()
     }
 
@@ -303,6 +323,13 @@ mod tests {
                 assert_eq!(parz(&input), expected);
             }
         }
+    }
+
+    #[test]
+    fn we_add_a_link_after_a_list_that_ends_the_file_even_if_it_doesnt_end_with_a_newline() {
+        let input = "\n## Subhead\n1. Foo\n2. Baz";
+        let expected = format!("\n## Subhead¶`dice: [[{NAME}#^subhead]]`¶1. Foo\n2. Baz¶^subhead¶");
+        assert_eq!(parz(&input), expected);
     }
 
     #[test]
