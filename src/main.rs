@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     // Create a .md file in `obsidian` for each `.txt` file in `source`
     for txt_name in article_names {
         if txt_name.ends_with(" copy.txt") {
-            // This avoids a duplicate file in Thinonomicon
+            // This avoids a duplicate file in Thingonomicon
             continue;
         }
         let source_path = source.join(&txt_name);
@@ -86,12 +86,15 @@ fn main() -> Result<()> {
             // `content_name` is correct for the two `12*` files in the Thinonomicon
             // and (as it happens) for the one `12*` files in the Laironomicon
             content_name
-        } else if content_name.len() > fs_name.len() {
-            content_name
-        } else {
+        } else if fs_name.len() > content_name.len() {
             fs_name
+        } else {
+            content_name
         };
-        let output_name = format!("{n:02} {description}");
+
+        // Currently there's only one file with a number >= 100; we choose to
+        // let that one sort to the end without a number rather than use three digits.
+        let output_name = if n < 100 { format!("{n:02} {description}") } else { description };
 
         let mut body = prologue;
         let parsed = parse(&output_name, to_be_parsed)

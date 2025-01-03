@@ -33,15 +33,14 @@ pub fn subdivide(contents: &str) -> Result<(String, String, &str)> {
     const COPYRIGHT: &str = "©";
     static OGL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:Include )?OGL\b").unwrap());
 
+    let file_name = embedded_file_name(contents)?;
+
     let Some(newline) = contents.find('\n') else {
-        return Ok((file_name_from_header(contents)?, String::new(), ""));
+        return Ok((file_name, String::new(), ""));
     };
 
-    let header = contents[0..newline].to_string();
-    let obsidian_file_name = file_name_from_header(&header)?;
     let mut proem = &contents[newline..];
     let remainder;
-
     if let Some(sub) = SUBHEAD.find(proem) {
         remainder = &proem[sub.start()..];
         let pro_start = if sub.start() == 0 { 0 } else { 1 }; // Skip the leading '\n'
@@ -67,23 +66,30 @@ pub fn subdivide(contents: &str) -> Result<(String, String, &str)> {
         }
     }
 
-    Ok((obsidian_file_name, prologue.concat(), remainder))
+    Ok((file_name, prologue.concat(), remainder))
 }
 
-fn file_name_from_header(header: &str) -> Result<String> {
+fn embedded_file_name(contents: &str) -> Result<String> {
     static HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#+\s+(.*\S)\s*").unwrap());
     static THINGS_20: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(?:20 Things #|Monstrous Lair #)(.*)").unwrap());
     static COLON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r":").unwrap());
 
-    let Some(header_caps) = HEADER.captures(header) else {
+    let Some(header_caps) = HEADER.captures(contents) else {
         bail!("It doesn't start with a Markdown header");
     };
     let initial_file_name = header_caps[1].trim();
-    let file_name = match THINGS_20.captures(initial_file_name) {
+    let mut file_name = match THINGS_20.captures(initial_file_name) {
         Some(caps) => caps[1].trim().to_string(),
         None => initial_file_name.trim().to_string(),
     };
+    if &file_name == "Name" {
+        static FROM_COPYRIGHT_LINE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"\n[^#]+#\d\d:\s*([^.]+)\.\s*©").unwrap());
+        if let Some(found) = FROM_COPYRIGHT_LINE.captures(contents) {
+            file_name = found[1].to_string();
+        }
+    }
 
     Ok(COLON.replace(&file_name, "").to_string())
 }
@@ -329,7 +335,7 @@ mod tests {
     fn we_add_a_link_after_a_list_that_ends_the_file_even_if_it_doesnt_end_with_a_newline() {
         let input = "\n## Subhead\n1. Foo\n2. Baz";
         let expected = format!("\n## Subhead¶`dice: [[{NAME}#^subhead]]`¶1. Foo\n2. Baz¶^subhead¶");
-        assert_eq!(parz(&input), expected);
+        assert_eq!(parz(input), expected);
     }
 
     #[test]
@@ -342,7 +348,8 @@ mod tests {
     }
 }
 #[cfg(test)]
-mod test_file_name_from_header {
+#[allow(non_snake_case)]
+mod test_embedded_file_name {
     use super::*;
     // The input must be a line with a Markdown header. The header marker (#, ##, etc) is
     // trimed, as is the '20 Things #' that sometimes follows the marker. The result is then
@@ -351,31 +358,37 @@ mod test_file_name_from_header {
 
     #[test]
     fn must_be_a_markdown_header() {
-        assert!(file_name_from_header(" # Too Late").is_err());
+        assert!(embedded_file_name(" # Too Late").is_err());
     }
 
     #[test]
     fn trims_header_marker_and_whitespace() {
-        assert_eq!(file_name_from_header("#  99 Bottles\t\n").unwrap(), "99 Bottles");
+        assert_eq!(embedded_file_name("#  99 Bottles\t\n").unwrap(), "99 Bottles");
     }
 
     #[test]
     fn trims_20_things_prefix() {
         // Some of the Raging Swan headers begin for file n begin with '20 Things #n:'.
         // We trim the '20 Things #' and the colon.
-        assert_eq!(file_name_from_header("# 20 Things #99: Bottles\n").unwrap(), "99 Bottles");
+        assert_eq!(embedded_file_name("# 20 Things #99: Bottles\n").unwrap(), "99 Bottles");
     }
 
     #[test]
-    fn file_name_from_header_removes_colon_everywhere() {
-        assert_eq!(file_name_from_header("# 88: Mottles\n").unwrap(), "88 Mottles".to_string());
+    fn embedded_file_name_removes_colon_everywhere() {
+        assert_eq!(embedded_file_name("# 88: Mottles\n").unwrap(), "88 Mottles".to_string());
     }
 
     #[test]
     fn markdown_can_be_header_2_etc() {
         for octo in ["#", "##", "####"] {
             let header = format!("{octo} 99 Bottles");
-            assert_eq!(file_name_from_header(&header).unwrap(), "99 Bottles");
+            assert_eq!(embedded_file_name(&header).unwrap(), "99 Bottles");
         }
+    }
+
+    #[test]
+    fn tries_to_find_a_better_name_than_Name() {
+        let contents = "# Name\nWhee!\nStuff#00: Better Name. ©";
+        assert_eq!(embedded_file_name(contents).unwrap(), "Better Name");
     }
 }
