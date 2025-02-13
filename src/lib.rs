@@ -28,7 +28,7 @@ use logos::Logos;
 use regex::Regex;
 use std::{error, fmt, ops::Range, str, sync::LazyLock};
 
-pub fn subdivide(contents: &str) -> Result<(String, String, &str)> {
+pub fn name_prologue_body(contents: &str) -> Result<(String, String, &str)> {
     static SUBHEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n#+\s").unwrap());
     const COPYRIGHT: &str = "©";
     static OGL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:Include )?OGL\b").unwrap());
@@ -232,12 +232,12 @@ mod tests {
 
     #[test]
     fn a_minimal_content_suffices() {
-        assert!(subdivide(MINIMAL).is_ok());
+        assert!(name_prologue_body(MINIMAL).is_ok());
     }
 
     #[test]
     fn prologue_must_contain_copyright_symbol() {
-        assert!(subdivide("# H\ncopyright\n## IJK").is_err());
+        assert!(name_prologue_body("# H\ncopyright\n## IJK").is_err());
     }
 
     #[test]
@@ -245,23 +245,26 @@ mod tests {
         let read_me = "00 Read Me";
         let rest = "\nblah diddy blah\n";
         let contents = ["## ", read_me, "\n", rest].concat();
-        assert_eq!(subdivide(&contents).unwrap(), (read_me.to_string(), rest.to_string(), ""));
+        assert_eq!(
+            name_prologue_body(&contents).unwrap(),
+            (read_me.to_string(), rest.to_string(), "")
+        );
     }
 
     #[test]
     #[allow(non_snake_case)]
     fn but_OGL_instead_of_copyright_is_ok() {
-        assert!(subdivide("# H\nOGL\nis not copyright\n----\n## Subhead").is_ok());
+        assert!(name_prologue_body("# H\nOGL\nis not copyright\n----\n## Subhead").is_ok());
     }
 
     #[test]
-    fn subdivide_does() {
+    fn name_prologue_body_does() {
         // returns file name, prologue, and body
         let input = "# Owlbear \nThanks\n©\nfoo\n©\nbar\n## Barred Owl";
         let fname = "Owlbear".to_owned();
         let prolog = "©\n©\n".to_owned();
         let body = "\n## Barred Owl";
-        assert_eq!(subdivide(input).unwrap(), (fname, prolog, body));
+        assert_eq!(name_prologue_body(input).unwrap(), (fname, prolog, body));
     }
 
     #[test]

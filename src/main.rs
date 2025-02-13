@@ -27,7 +27,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use regex::bytes::Regex;
 
-use dreadnom::{parse, subdivide};
+use dreadnom::{name_prologue_body, parse};
 
 #[derive(Parser)]
 struct Args {
@@ -46,7 +46,9 @@ fn main() -> Result<()> {
     let article_names = gather_and_validate_visible_files_in(&source, TXT)?;
     if article_names.is_empty() {
         bail!("No articles found in directory {source}");
-    } else if let Some(unnumbered) = article_names.iter().find(|&a| parse_name(a).0.is_none()) {
+    } else if let Some(unnumbered) =
+        article_names.iter().find(|&a| number_and_name_from(a).0.is_none())
+    {
         bail!(
             "All articles must start with a number, but found {unnumbered} in directory {source}"
         );
@@ -74,16 +76,16 @@ fn main() -> Result<()> {
                 special_case = parseable;
                 (name, String::new(), &special_case[..])
             }
-            None => subdivide(&original)
+            None => name_prologue_body(&original)
                 .with_context(|| format!("Can't understand file {source_path}"))?,
         };
 
-        let (Some(n), fs_name) = parse_name(&txt_name) else {
+        let (Some(n), fs_name) = number_and_name_from(&txt_name) else {
             panic!("This can't happen: all article_names start with a number");
         };
-        let (_, content_name) = parse_name(&content_name);
+        let (_, content_name) = number_and_name_from(&content_name);
         let description = if n == 12 {
-            // `content_name` is correct for the two `12*` files in the Thinonomicon
+            // `content_name` is correct for the two `12*` files in the Thingonomicon
             // and (as it happens) for the one `12*` files in the Laironomicon
             content_name
         } else if fs_name.len() > content_name.len() {
@@ -146,7 +148,7 @@ fn urban_idea_special_case(contents: &str) -> Option<(String, String)> {
     None
 }
 
-fn parse_name(name: &str) -> (Option<u32>, String) {
+fn number_and_name_from(name: &str) -> (Option<u32>, String) {
     static PARTS: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(\d+)?[\s_]*(.*?)(?:.txt)?$").unwrap());
     let Some(cap) = PARTS.captures(name.as_bytes()) else {
@@ -180,12 +182,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_name_splits_initial_number_from_rest() {
+    fn number_and_name_from_splits_initial_number_from_rest() {
         let a = "12_stuff.txt";
         let b = "12 stuff";
         let c = "stuff.txt";
-        assert_eq!(parse_name(a), (Some(12), "stuff".to_string()));
-        assert_eq!(parse_name(b), (Some(12), "stuff".to_string()));
-        assert_eq!(parse_name(c), (None, "stuff".to_string()));
+        assert_eq!(number_and_name_from(a), (Some(12), "stuff".to_string()));
+        assert_eq!(number_and_name_from(b), (Some(12), "stuff".to_string()));
+        assert_eq!(number_and_name_from(c), (None, "stuff".to_string()));
     }
 }
