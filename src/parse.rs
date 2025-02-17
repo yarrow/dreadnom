@@ -1,49 +1,43 @@
-#![allow(clippy::bool_to_int_with_if, clippy::enum_glob_use)]
+#![allow(clippy::enum_glob_use)]
 
 use anyhow::{self, bail, Context, Result};
 use logos::Logos;
 use regex::Regex;
 use std::{error, fmt, ops::Range, str, sync::LazyLock};
 
-pub(crate) fn name_prologue_body(contents: &str) -> Result<(String, String, &str)> {
+pub(crate) fn name_copyright_body(contents: &str) -> Result<(String, String, &str)> {
     static SUBHEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n#+\s").unwrap());
+    static COPYRIGHT_OR_OGL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bOGL\b|©").unwrap());
     const COPYRIGHT: &str = "©";
-    static OGL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:Include )?OGL\b").unwrap());
 
     let file_name = embedded_file_name(contents)?;
 
+    // The first line is a title, but Obsidian uses the file name as a title
     let Some(newline) = contents.find('\n') else {
         return Ok((file_name, String::new(), ""));
     };
+    let contents = &contents[newline..];
 
-    let mut proem = &contents[newline..];
-    let remainder;
-    if let Some(sub) = SUBHEAD.find(proem) {
-        remainder = &proem[sub.start()..];
-        let pro_start = if sub.start() == 0 { 0 } else { 1 }; // Skip the leading '\n'
-        proem = &proem[pro_start..sub.start()];
-    } else {
-        proem = &proem[1..];
-        remainder = "";
-    }
+    let remainder_start = match SUBHEAD.find(contents) {
+        Some(subhead) => subhead.start(),
+        None => contents.len(),
+    };
+    let (prologue, remainder) = contents.split_at(remainder_start);
 
-    let mut prologue = Vec::new();
-    if remainder.is_empty() {
-        prologue.push(proem.to_owned());
-    } else {
-        let mut lines = proem.lines();
-        for line in lines.by_ref() {
-            if line.contains(COPYRIGHT) || OGL.is_match(line) {
-                prologue.push(line.to_owned());
-                prologue.push("\n".to_owned());
-            }
-        }
-        if prologue.is_empty() {
-            bail!("It doesn't contain a copyright symbol ({COPYRIGHT})");
+    let mut copyright = Vec::new();
+    let mut lines = prologue.lines();
+    for line in lines.by_ref() {
+        if COPYRIGHT_OR_OGL.is_match(line) {
+            // Make this line a Markdown paragraph
+            copyright.push(line.to_owned());
+            copyright.push("\n".to_owned());
         }
     }
+    if copyright.is_empty() {
+        bail!("It doesn't contain a copyright symbol ({COPYRIGHT})");
+    }
 
-    Ok((file_name, prologue.concat(), remainder))
+    Ok((file_name, copyright.concat(), remainder))
 }
 
 fn embedded_file_name(contents: &str) -> Result<String> {
@@ -209,39 +203,36 @@ mod tests {
 
     #[test]
     fn a_minimal_content_suffices() {
-        assert!(name_prologue_body(MINIMAL).is_ok());
+        assert!(name_copyright_body(MINIMAL).is_ok());
     }
 
     #[test]
     fn prologue_must_contain_copyright_symbol() {
-        assert!(name_prologue_body("# H\ncopyright\n## IJK").is_err());
+        assert!(name_copyright_body("# H\ncopyright\n## IJK").is_err());
     }
 
     #[test]
-    fn but_if_there_are_no_subsections_then_copyright_isnt_required() {
+    fn copyright_is_required_even_if_there_are_no_subsections() {
         let read_me = "00 Read Me";
         let rest = "\nblah diddy blah\n";
         let contents = ["## ", read_me, "\n", rest].concat();
-        assert_eq!(
-            name_prologue_body(&contents).unwrap(),
-            (read_me.to_string(), rest.to_string(), "")
-        );
+        assert!(name_copyright_body(&contents).is_err());
     }
 
     #[test]
     #[allow(non_snake_case)]
     fn but_OGL_instead_of_copyright_is_ok() {
-        assert!(name_prologue_body("# H\nOGL\nis not copyright\n----\n## Subhead").is_ok());
+        assert!(name_copyright_body("# H\nOGL\nis not copyright\n----\n## Subhead").is_ok());
     }
 
     #[test]
-    fn name_prologue_body_does() {
+    fn name_copyright_body_does() {
         // returns file name, prologue, and body
         let input = "# Owlbear \nThanks\n©\nfoo\n©\nbar\n## Barred Owl";
         let fname = "Owlbear".to_owned();
         let prolog = "©\n©\n".to_owned();
         let body = "\n## Barred Owl";
-        assert_eq!(name_prologue_body(input).unwrap(), (fname, prolog, body));
+        assert_eq!(name_copyright_body(input).unwrap(), (fname, prolog, body));
     }
 
     #[test]

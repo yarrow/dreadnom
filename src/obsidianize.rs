@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use regex::bytes::Regex;
 
-use crate::parse::{name_prologue_body, parse};
+use crate::parse::{name_copyright_body, parse};
 
 pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Result<()> {
     const PRE_PROLOGUE: &[u8] = b"---\nobsidianUIMode: preview\n---\n\n";
@@ -36,6 +36,10 @@ pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Re
             // This avoids a duplicate file in Thingonomicon
             continue;
         }
+        if txt_name == "00 Read Me.txt" {
+            // This Laironomicon intro file doesn't have a copyright line, and we'll be supplying our own 00 README
+            continue;
+        }
         let source_path = source.join(&txt_name);
         let original = fs::read_to_string(&source_path)?;
 
@@ -45,7 +49,7 @@ pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Re
                 special_case = parseable;
                 (name, String::new(), &special_case[..])
             }
-            None => name_prologue_body(&original)
+            None => name_copyright_body(&original)
                 .with_context(|| format!("Can't understand file {source_path}"))?,
         };
 
