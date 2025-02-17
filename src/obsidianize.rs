@@ -2,7 +2,7 @@ use std::{fs, fs::File, io::Write, str, str::FromStr, sync::LazyLock};
 
 use anyhow::{bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use regex::bytes::Regex;
+use regex::Regex;
 
 use crate::parse::{name_copyright_body, parse};
 
@@ -111,7 +111,7 @@ fn urban_idea_special_case(contents: &str) -> Option<(String, String)> {
     static URBAN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^#\s+71:? Urban.*\n#ideas\s*(1.)").unwrap());
 
-    if let Some(urb) = URBAN.captures(contents.as_bytes()) {
+    if let Some(urb) = URBAN.captures(contents) {
         let start = urb.get(1).unwrap().start();
         return Some((
             "71 Urban Events".to_string(),
@@ -124,18 +124,15 @@ fn urban_idea_special_case(contents: &str) -> Option<(String, String)> {
 fn number_and_name_from(name: &str) -> (Option<u32>, String) {
     static PARTS: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(\d+)?[\s_]*(.*?)(?:.txt)?$").unwrap());
-    let Some(cap) = PARTS.captures(name.as_bytes()) else {
-        return (None, name.to_string());
-    };
-    let n = match cap.get(1) {
-        Some(n_bytes) => {
-            let n_str = str::from_utf8(n_bytes.as_bytes()).unwrap();
-            Some(u32::from_str(n_str).unwrap())
+    match PARTS.captures(name) {
+        Some(cap) => {
+            let n = cap.get(1).map(|n_str| u32::from_str(n_str.as_str()).unwrap());
+            (n, cap[2].to_string())
         }
-        None => None,
-    };
-    (n, String::from_utf8(cap[2].to_vec()).unwrap())
+        None => (None, name.to_string()),
+    }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
