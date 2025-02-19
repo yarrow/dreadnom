@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn added_material_is_preceeded_and_followed_by_paragraphs() {
+    fn added_material_is_preceded_and_followed_by_paragraphs() {
         let before = ["\n## X", "\n## X\ntext"];
         let after = ["## Y", "text", ""];
         let list = "1. a\n2. b";
@@ -323,7 +323,7 @@ mod tests {
 mod test_embedded_file_name {
     use super::*;
     // The input must be a line with a Markdown header. The header marker (#, ##, etc) is
-    // trimed, as is the '20 Things #' that sometimes follows the marker. The result is then
+    // trimmed, as is the '20 Things #' that sometimes follows the marker. The result is then
     // trimmed of white space.
     //
 

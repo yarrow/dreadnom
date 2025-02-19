@@ -2,6 +2,15 @@
 name = "dreadnom"
 version = "0.1.0"
 edition = "2021"
+authors = ["Yarrow Angelweed <yarrow.angelweed@gmail.com>"]
+description = "dreadnom ajusts Raging Swan's Dread Thingonomicon and Dread Laironomicon for automatic dice rolling in Obsidian"
+documentation = "https://github.com/yarrow/dreadnom"
+homepage = "https://github.com/yarrow/dreadnom"
+repository = "https://github.com/yarrow/dreadnom"
+readme = "README.md"
+keywords = ["obsidian", "raging-swan","rpg", "ttrg"]
+categories = ["command-line-utilities", "parser-implementations"]
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.94"
@@ -15,3 +24,8 @@ tinytemplate = "1.2.1"
 [dev-dependencies]
 assert_cmd = "2.0.16"
 assert_fs = "1.1.2"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
