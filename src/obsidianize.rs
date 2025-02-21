@@ -1,26 +1,36 @@
 use std::{fs, fs::File, io::Write, str, str::FromStr, sync::LazyLock};
 
-use anyhow::{bail, Context, Result};
-use camino::{Utf8Path, Utf8PathBuf};
+use anyhow::{Context, Result, bail};
+use camino::Utf8PathBuf;
 use regex::Regex;
 use serde::Serialize;
-use tinytemplate::{format_unescaped, TinyTemplate};
+use tinytemplate::{TinyTemplate, format_unescaped};
 
 use crate::parse::{name_copyright_body, parse};
+use crate::source::{DreadDirectory, DreadReader, DreadZipfile};
 
 pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Result<()> {
-    const TXT: &str = ".txt";
-
-    // Get the names of the source files
-    let article_names = gather_and_validate_visible_files_in(source, TXT)?;
+    if !source.try_exists()? {
+        bail!("Source {source} does not exist")
+    }
+    if source.is_dir() {
+        reformat(&mut DreadDirectory::new(source, "txt")?, obsidian)
+    } else {
+        let mut zip = DreadZipfile::new(source, "txt").with_context(|| {
+            format!("Source {source} doesn't seem to be either a directory or a valid Zip archive")
+        })?;
+        reformat(&mut zip, obsidian)
+    }
+}
+fn reformat(source: &mut impl DreadReader, obsidian: &Utf8PathBuf) -> Result<()> {
+    let location = source.location();
+    let article_names = source.validated_article_names()?;
     if article_names.is_empty() {
-        bail!("No articles found in directory {source}");
+        bail!("No articles found in {location}");
     } else if let Some(unnumbered) =
-        article_names.iter().find(|&a| number_and_name_from(a).0.is_none())
+        article_names.iter().find(|&a| number_and_title_from(a).0.is_none())
     {
-        bail!(
-            "All articles must start with a number, but found {unnumbered} in directory {source}"
-        );
+        bail!("All articles must start with a number, but found {unnumbered} in {location}");
     }
 
     // Ensure that `obsdian` exists and contains only `.md` files (or ignored files)
@@ -28,18 +38,17 @@ pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Re
         fs::create_dir(obsidian).with_context(|| format!("Can't create directory {obsidian}"))?;
     }
     // For `obsidian` we don't need the files, just the validation
-    gather_and_validate_visible_files_in(obsidian, ".md")?;
+    DreadDirectory::new(obsidian, "md")?.validated_article_names()?;
 
     let mut readme_info = ReadmeInfo::default();
-    // Create a .md file in `obsidian` for each `.txt` file in `source`
-    for txt_name in article_names {
-        if txt_name.ends_with(" copy.txt") {
+    // Create a .md file in `obsidian` for each `.txt` file in `location`
+    for external_name in article_names {
+        if external_name.ends_with(" copy") {
             // This avoids a duplicate file in Thingonomicon
             continue;
         }
-        let source_path = source.join(&txt_name);
-        let article = fs::read_to_string(&source_path)?;
-        if txt_name == "00 Read Me.txt" {
+        let article = source.article(&external_name)?;
+        if external_name == "00 Read Me" {
             // This Laironomicon intro file doesn't have a copyright line, and we'll be supplying our own Read Me file
             readme_info.save_original_readme(article);
             continue;
@@ -47,27 +56,28 @@ pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Re
         readme_info.update_from_article(&article);
 
         let special_case;
-        let (content_name, prologue, to_be_parsed) = match urban_idea_special_case(&article) {
+        let (content_title, prologue, to_be_parsed) = match urban_idea_special_case(&article) {
             Some((name, parseable)) => {
                 special_case = parseable;
                 (name, String::new(), &special_case[..])
             }
-            None => name_copyright_body(&article)
-                .with_context(|| format!("Can't understand file {source_path}"))?,
+            None => name_copyright_body(&article).with_context(|| {
+                format!("Can't understand article {external_name} in {location}")
+            })?,
         };
 
-        let (Some(n), fs_name) = number_and_name_from(&txt_name) else {
+        let (Some(n), external_title) = number_and_title_from(&external_name) else {
             bail!("This can't happen: all article_names start with a number");
         };
-        let (_, content_name) = number_and_name_from(&content_name);
+        let (_, content_title) = number_and_title_from(&content_title);
         let description = if n == 12 {
-            // `content_name` is correct for the two `12*` files in the Thingonomicon
+            // `content_title` is correct for the two `12*` files in the Thingonomicon
             // and (as it happens) for the one `12*` files in the Laironomicon
-            content_name
-        } else if fs_name.len() > content_name.len() {
-            fs_name
+            content_title
+        } else if external_title.len() > content_title.len() {
+            external_title
         } else {
-            content_name
+            content_title
         };
 
         // Currently there's only one file with a number >= 100; we choose to
@@ -76,7 +86,7 @@ pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Re
 
         let mut body = prologue;
         let parsed = parse(&output_name, to_be_parsed)
-            .with_context(|| format!("Can't understand file {source_path}"))?;
+            .with_context(|| format!("Can't understand article {external_name} in {location}"))?;
         body.push_str(&parsed.to_string());
 
         write_markdown(obsidian, &output_name, &body)?;
@@ -89,9 +99,8 @@ pub fn reformat_for_obsidian(source: &Utf8PathBuf, obsidian: &Utf8PathBuf) -> Re
     Ok(())
 }
 
-fn number_and_name_from(name: &str) -> (Option<u32>, String) {
-    static PARTS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^(\d+)?[\s_]*(.*?)(?:.txt)?$").unwrap());
+fn number_and_title_from(name: &str) -> (Option<u32>, String) {
+    static PARTS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)?[\s_]*(.*)?$").unwrap());
     match PARTS.captures(name) {
         Some(cap) => {
             let n = cap.get(1).map(|n_str| u32::from_str(n_str.as_str()).unwrap());
@@ -99,28 +108,6 @@ fn number_and_name_from(name: &str) -> (Option<u32>, String) {
         }
         None => (None, name.to_string()),
     }
-}
-
-fn gather_and_validate_visible_files_in(dir: &Utf8Path, extension: &str) -> Result<Vec<String>> {
-    let entries = dir.read_dir_utf8().with_context(|| format!("Can't open directory {dir}"))?;
-    let mut names = Vec::new();
-    for entry in entries {
-        let entry = entry.with_context(|| "Error reading directory {dir}")?;
-        let path = entry.path();
-        let meta = fs::metadata(path).with_context(|| "Error reading {path}")?;
-        if meta.is_file() {
-            let Some(name) = path.file_name() else { continue };
-            if !(name.starts_with('.')) {
-                let name = name.to_string();
-                if !name.ends_with(extension) {
-                    bail!("Files in {dir} should end in {extension} but found {name}");
-                }
-
-                names.push(name.to_string());
-            }
-        }
-    }
-    Ok(names)
 }
 
 fn write_markdown(obsidian: &Utf8PathBuf, output_name: &str, body: &str) -> Result<()> {
@@ -217,12 +204,10 @@ mod tests {
     }
 
     #[test]
-    fn number_and_name_from_splits_initial_number_from_rest() {
-        let a = "12_stuff.txt";
-        let b = "12 stuff";
-        let c = "stuff.txt";
-        assert_eq!(number_and_name_from(a), (Some(12), "stuff".to_string()));
-        assert_eq!(number_and_name_from(b), (Some(12), "stuff".to_string()));
-        assert_eq!(number_and_name_from(c), (None, "stuff".to_string()));
+    fn number_and_title_from_splits_initial_number_from_rest() {
+        let a = "12_stuff";
+        let b = "stuff";
+        assert_eq!(number_and_title_from(a), (Some(12), "stuff".to_string()));
+        assert_eq!(number_and_title_from(b), (None, "stuff".to_string()));
     }
 }

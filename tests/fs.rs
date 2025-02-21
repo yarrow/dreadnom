@@ -27,7 +27,7 @@ use std::process::Command;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use assert_cmd::prelude::*;
-use assert_fs::{fixture::ChildPath, prelude::*, TempDir};
+use assert_fs::{TempDir, fixture::ChildPath, prelude::*};
 
 struct Playground {
     cmd: Command,

@@ -1,6 +1,6 @@
 #![allow(clippy::enum_glob_use)]
 
-use anyhow::{self, bail, Context, Result};
+use anyhow::{self, Context, Result, bail};
 use logos::Logos;
 use regex::Regex;
 use std::{error, fmt, ops::Range, str, sync::LazyLock};
