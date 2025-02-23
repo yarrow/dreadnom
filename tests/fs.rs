@@ -10,7 +10,6 @@
     unused_qualifications,
     unused_must_use
 )]
-#![allow(clippy::cargo)] // FIXME
 #![allow(
     clippy::items_after_statements,
     clippy::missing_errors_doc,
