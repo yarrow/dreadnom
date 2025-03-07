@@ -1,0 +1,11 @@
+{
+  "build": {
+    "path_prefix": "dreadnom"
+  },
+  "components": {
+    "changelog": false,
+    "artifacts": {
+      "cargo_dist": true
+    }
+  }
+}
