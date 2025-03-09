@@ -3,7 +3,7 @@
 use anyhow::{self, Context, Result, bail};
 use logos::Logos;
 use regex::Regex;
-use std::{error, fmt, ops::Range, str, sync::LazyLock};
+use std::{error, fmt, str, sync::LazyLock};
 
 pub(crate) fn name_copyright_body(contents: &str) -> Result<(String, String, &str)> {
     static SUBHEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n#+\s").unwrap());
@@ -65,6 +65,31 @@ fn embedded_file_name(contents: &str) -> Result<String> {
     Ok(COLON.replace(&file_name, "").to_string())
 }
 
+pub(crate) fn parse(name: &str, contents: &str) -> Result<String> {
+    if contents.is_empty() {
+        return Ok(String::new());
+    }
+    if !contents.starts_with('\n') {
+        bail!(r"Internal error: `parse(contents)` requires `contents` to start with a newline");
+    }
+
+    let mut parts = ParseParts::new(name, "^START");
+    let mut old_kind = LineKind::Vanilla;
+
+    for (kind, span) in LineKind::lexer(contents).spanned() {
+        let kind = kind.with_context(|| format!("Seen so far: {:?}", parts.concat()))?;
+        if old_kind != kind {
+            parts.kind_transition(old_kind, kind)?
+        }
+        parts.push(kind, &contents[span]);
+        old_kind = kind;
+    }
+    parts.kind_transition(old_kind, LineKind::Vanilla)?;
+
+    static EXTRA_NEWLINES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\n\n+").unwrap());
+    Ok(EXTRA_NEWLINES.replace_all(&parts.concat(), "\n\n").to_string())
+}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 enum ThisCantHappen {
     #[default]
@@ -77,10 +102,11 @@ impl fmt::Display for ThisCantHappen {
         write!(f, "Internal error: Unexpected Parsing Error")
     }
 }
-#[derive(Debug, Logos, PartialEq)]
+const LIST_ITEM: &str = r"\n\d+\.\s*(.*)";
+#[derive(Debug, Logos, PartialEq, Clone, Copy)]
 #[logos(error = ThisCantHappen)]
 enum LineKind {
-    #[regex("\n\\d+\\.[^\n]*")]
+    #[regex("\n\\d+\\.[^\n]*")] // This regex must track LIST_ITEM above
     ListItem,
 
     #[regex("\n#+ [^\n]*")]
@@ -92,76 +118,69 @@ enum LineKind {
 
 struct ParseParts<'a> {
     name: &'a str,
-    parts: Vec<String>,
+    lines: Vec<String>,
+    list: Vec<&'a str>,
     link: String,
 }
 
 impl<'a> ParseParts<'a> {
     fn new(name: &'a str, link: &str) -> Self {
-        Self { name, parts: Vec::new(), link: link.to_string() }
+        Self { name, lines: Vec::new(), list: Vec::new(), link: link.to_string() }
     }
-    fn push(&mut self, text: &str) {
-        self.parts.push(text.to_string());
+    fn push_line(&mut self, text: &str) {
+        self.lines.push(text.to_string());
     }
-    fn push_with_paragraph(&mut self, text: String) {
-        const PARAGRAPH: &str = "\n\n";
-        self.push(PARAGRAPH);
-        self.parts.push(text);
-        self.push(PARAGRAPH);
-    }
-    fn set_link(&mut self, link_text: &str) {
-        self.link = make_link(link_text);
-    }
-    fn push_link(&mut self) {
-        self.push_with_paragraph(self.link.clone());
-    }
-    fn push_dice_code(&mut self) {
-        self.push_with_paragraph(dice_code(self.name, &self.link));
+    fn push_as_paragraph(&mut self, text: String) {
+        const PILCROW: &str = "\n\n";
+        self.push_line(PILCROW);
+        self.lines.push(text);
+        self.push_line(PILCROW);
     }
     fn concat(&self) -> String {
-        self.parts.concat()
+        let mut all = self.lines.concat();
+        all.push_str(&self.list.concat());
+        all
+    }
+    fn push(&mut self, kind: LineKind, line: &'a str) {
+        match kind {
+            LineKind::ListItem => {
+                self.list.push(line);
+            }
+            LineKind::Header => {
+                self.link = make_link(line);
+                self.push_line(line);
+            }
+            LineKind::Vanilla => {
+                self.push_line(line);
+            }
+        }
+    }
+    fn kind_transition(&mut self, from: LineKind, to: LineKind) -> Result<()> {
+        if to == LineKind::ListItem {
+            self.push_as_paragraph(dice_code(self.name, &self.link));
+        } else if from == LineKind::ListItem {
+            self.lines.push(list_to_table(&self.list)?);
+            self.list.clear();
+            self.push_as_paragraph(self.link.clone());
+        }
+        Ok(())
     }
 }
 
-pub(crate) fn parse(name: &str, contents: &str) -> Result<String> {
-    use LineKind::*;
-
-    if contents.is_empty() {
-        return Ok(String::new());
+fn list_to_table(items: &Vec<&str>) -> Result<String> {
+    static ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(LIST_ITEM).unwrap());
+    let n = items.len();
+    if n == 0 {
+        bail!("Internal error: there should be at least one list item");
     }
-    if !contents.starts_with('\n') {
-        bail!(r"Internal error: `parse(contents)` requires `contents` to start with a newline");
+    let mut rows = vec![format!("\n| d{n} | Item\n| --: | --")];
+    for item in items {
+        let Some(captures) = ITEM.captures(item) else {
+            bail!("Internal error: this isn't a list item: {item}")
+        };
+        rows.push(format!("\n| {} | {}", rows.len(), captures[1].trim()));
     }
-
-    let mut parts = ParseParts::new(name, "^START");
-    let (mut start, mut end) = (0, 0);
-    let mut previous = Vanilla;
-
-    for (kind, span) in LineKind::lexer(contents).spanned() {
-        let kind = kind.with_context(|| format!("Seen so far: {:?}", parts.concat()))?;
-        if kind == previous {
-            end = span.end;
-        } else {
-            parts.push(&contents[start..end]);
-            if previous == ListItem {
-                parts.push_link();
-            }
-            Range { start, end } = span;
-            match kind {
-                ListItem => parts.push_dice_code(),
-                Header => parts.set_link(&contents[span]),
-                Vanilla => {}
-            }
-        }
-        previous = kind;
-    }
-    parts.push(&contents[start..end]);
-    if previous == ListItem {
-        parts.push_link();
-    }
-
-    static EXTRA_NEWLINES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\n\n+").unwrap());
-    Ok(EXTRA_NEWLINES.replace_all(&parts.concat(), "\n\n").to_string())
+    Ok(rows.concat())
 }
 
 #[derive(Debug, Logos, PartialEq)]
@@ -276,11 +295,17 @@ mod tests {
         assert_eq!(parz(expected), expected);
     }
 
+    fn header(n: usize) -> String {
+        format!("| d{n} | Item\n| --: | --")
+    }
+
     #[test]
     fn parse_adds_dice_rolling_code_before_and_link_after_lists() {
         let input = "\n## Random List\n1. Foo\n2. Baz";
-        let expected =
-            format!("\n## Random List¶`dice: [[{NAME}#^random-list]]`¶1. Foo\n2. Baz¶^random-list");
+        let head = header(2);
+        let expected = format!(
+            "\n## Random List¶`dice: [[{NAME}#^random-list]]`¶{head}\n| 1 | Foo\n| 2 | Baz¶^random-list"
+        );
         let input = [input, "\nCat Dog"].concat();
         let expected = [&expected, "¶Cat Dog"].concat();
         assert_eq!(parz(&input), expected);
@@ -291,12 +316,13 @@ mod tests {
         let before = ["\n## X", "\n## X\ntext"];
         let after = ["## Y", "text", ""];
         let list = "1. a\n2. b";
+        let table = format!("{}\n| 1 | a\n| 2 | b", header(2));
         let link = "^x";
         let code = format!("`dice: [[{NAME}#{link}]]`");
         for b4 in before {
             for aft in after {
                 let input = [b4, "\n", list, "\n", aft].concat();
-                let expected = [b4, "¶", &code, "¶", list, "¶", link, "¶", aft].concat();
+                let expected = [b4, "¶", &code, "¶", &table, "¶", link, "¶", aft].concat();
                 assert_eq!(parz(&input), expected);
             }
         }
@@ -305,21 +331,35 @@ mod tests {
     #[test]
     fn we_add_a_link_after_a_list_that_ends_the_file_even_if_it_doesnt_end_with_a_newline() {
         let input = "\n## Subhead\n1. Foo\n2. Baz";
-        let expected = format!("\n## Subhead¶`dice: [[{NAME}#^subhead]]`¶1. Foo\n2. Baz¶^subhead¶");
+        let head = header(2);
+        let expected = format!(
+            "\n## Subhead¶`dice: [[{NAME}#^subhead]]`¶{head}\n| 1 | Foo\n| 2 | Baz¶^subhead¶"
+        );
         assert_eq!(parz(input), expected);
     }
 
+    #[test]
+    fn list_to_table_errors_on_an_empty_list() {
+        assert!(list_to_table(&Vec::new()).is_err());
+    }
+
+    #[test]
+    fn list_to_table_output() {
+        let input = vec!["\n1. Foo", "\n2. Bar"];
+        let expected = "\n| d2 | Item\n| --: | --\n| 1 | Foo\n| 2 | Bar";
+        assert_eq!(list_to_table(&input).unwrap(), expected);
+    }
     #[test]
     fn check_bad_parse_regression() {
         const WEIRD: &str = "\n\n1. T\n";
         let link = "^START";
         let code = format!("`dice: [[{NAME}#{link}]]`");
-        let expected = ["¶", &code, "¶", "1. T", "¶", link, "¶"].concat();
+        let table = format!("{}\n| 1 | T", header(1));
+        let expected = ["¶", &code, "¶", &table, "¶", link, "¶"].concat();
         assert_eq!(parz(WEIRD), expected);
     }
 }
 #[cfg(test)]
-#[allow(non_snake_case)]
 mod test_embedded_file_name {
     use super::*;
     // The input must be a line with a Markdown header. The header marker (#, ##, etc) is
@@ -357,6 +397,7 @@ mod test_embedded_file_name {
         }
     }
 
+    #[allow(non_snake_case)]
     #[test]
     fn tries_to_find_a_better_name_than_Name() {
         let contents = "# Name\nWhee!\nStuff#00: Better Name. ©";
