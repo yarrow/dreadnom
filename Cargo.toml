@@ -1,6 +1,6 @@
 [package]
 name = "dreadnom"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Yarrow Angelweed <yarrow.angelweed@gmail.com>"]
 description = "dreadnom ajusts Raging Swan's Dread Thingonomicon and Dread Laironomicon for automatic dice rolling in Obsidian"

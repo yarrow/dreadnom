@@ -173,12 +173,12 @@ fn list_to_table(items: &Vec<&str>) -> Result<String> {
     if n == 0 {
         bail!("Internal error: there should be at least one list item");
     }
-    let mut rows = vec![format!("\n| d{n} | Item\n| --: | --")];
+    let mut rows = vec![format!("\n| d{n} | Item |\n| --:| -- |")];
     for item in items {
         let Some(captures) = ITEM.captures(item) else {
             bail!("Internal error: this isn't a list item: {item}")
         };
-        rows.push(format!("\n| {} | {}", rows.len(), captures[1].trim()));
+        rows.push(format!("\n| {} | {} |", rows.len(), captures[1].trim()));
     }
     Ok(rows.concat())
 }
@@ -296,7 +296,7 @@ mod tests {
     }
 
     fn header(n: usize) -> String {
-        format!("| d{n} | Item\n| --: | --")
+        format!("| d{n} | Item |\n| --:| -- |")
     }
 
     #[test]
@@ -304,7 +304,7 @@ mod tests {
         let input = "\n## Random List\n1. Foo\n2. Baz";
         let head = header(2);
         let expected = format!(
-            "\n## Random List¶`dice: [[{NAME}#^random-list]]`¶{head}\n| 1 | Foo\n| 2 | Baz¶^random-list"
+            "\n## Random List¶`dice: [[{NAME}#^random-list]]`¶{head}\n| 1 | Foo |\n| 2 | Baz |¶^random-list"
         );
         let input = [input, "\nCat Dog"].concat();
         let expected = [&expected, "¶Cat Dog"].concat();
@@ -316,7 +316,7 @@ mod tests {
         let before = ["\n## X", "\n## X\ntext"];
         let after = ["## Y", "text", ""];
         let list = "1. a\n2. b";
-        let table = format!("{}\n| 1 | a\n| 2 | b", header(2));
+        let table = format!("{}\n| 1 | a |\n| 2 | b |", header(2));
         let link = "^x";
         let code = format!("`dice: [[{NAME}#{link}]]`");
         for b4 in before {
@@ -333,7 +333,7 @@ mod tests {
         let input = "\n## Subhead\n1. Foo\n2. Baz";
         let head = header(2);
         let expected = format!(
-            "\n## Subhead¶`dice: [[{NAME}#^subhead]]`¶{head}\n| 1 | Foo\n| 2 | Baz¶^subhead¶"
+            "\n## Subhead¶`dice: [[{NAME}#^subhead]]`¶{head}\n| 1 | Foo |\n| 2 | Baz |¶^subhead¶"
         );
         assert_eq!(parz(input), expected);
     }
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn list_to_table_output() {
         let input = vec!["\n1. Foo", "\n2. Bar"];
-        let expected = "\n| d2 | Item\n| --: | --\n| 1 | Foo\n| 2 | Bar";
+        let expected = "\n| d2 | Item |\n| --:| -- |\n| 1 | Foo |\n| 2 | Bar |";
         assert_eq!(list_to_table(&input).unwrap(), expected);
     }
     #[test]
@@ -354,7 +354,7 @@ mod tests {
         const WEIRD: &str = "\n\n1. T\n";
         let link = "^START";
         let code = format!("`dice: [[{NAME}#{link}]]`");
-        let table = format!("{}\n| 1 | T", header(1));
+        let table = format!("{}\n| 1 | T |", header(1));
         let expected = ["¶", &code, "¶", &table, "¶", link, "¶"].concat();
         assert_eq!(parz(WEIRD), expected);
     }
